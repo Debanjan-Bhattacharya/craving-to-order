@@ -144,9 +144,23 @@ with col_main:
         st.session_state.total_cost += cost["estimated_cost_usd"]
         st.session_state.total_queries += 1
         st.session_state.history.insert(0, query.strip())
+        # Store turn in conversation history (keep last 3 only)
+     dishes_recommended = [hit["dish"] for hit in result["hits"]]
+cuisines_recommended = list(set([
+    hit.get("cuisine_type", "") 
+    for hit in result["hits"] 
+    if hit.get("cuisine_type")
+]))
+st.session_state.conversation_history.append({
+    "query": query.strip(),
+    "dishes": dishes_recommended[:3],
+    "cuisines": cuisines_recommended[:2]
+})
+if len(st.session_state.conversation_history) > 3:
+    st.session_state.conversation_history.pop(0)
 
-    elif submitted and not query.strip():
-        st.warning("Please enter a craving first.")
+elif submitted and not query.strip():
+    st.warning("Please enter a craving first.")
 
 with col_sidebar:
     st.markdown("#### 📈 Session Stats")

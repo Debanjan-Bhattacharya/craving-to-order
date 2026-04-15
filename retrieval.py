@@ -51,7 +51,7 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
         print(f"  [cache hit] Reusing expansion for: '{raw_query}'")
         return expansion_cache[cache_key]
 
-    # Build context string from conversation history
+   # Build context string from conversation history
     context_str = ""
     if conversation_history and len(conversation_history) > 0:
         context_str = "\n\nConversation history (most recent last):\n"
@@ -59,6 +59,11 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
             context_str += f"User asked: {turn['query']}\n"
             context_str += f"Recommended: {', '.join(turn['dishes'][:3])}\n"
         context_str += "\nThe new query may refer to the above context."
+        context_str += "\nTry to stay in a similar cuisine and category unless the user explicitly asks to change it."
+        # Add cuisine context from last turn if available
+        last_turn = conversation_history[-1]
+        if last_turn.get("cuisines"):
+            context_str += f"\nPrevious recommendations were {', '.join(last_turn['cuisines'])} cuisine. Prefer the same unless asked to change."
 
     prompt = (
         "You are a food search assistant for Delhi restaurants. "
