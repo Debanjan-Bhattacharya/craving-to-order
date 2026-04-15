@@ -11,7 +11,7 @@ PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 INDEX_HOST = "https://craving-to-order-9udw9bu.svc.aped-4627-b74a.pinecone.io"
 EMBEDDING_MODEL = "text-embedding-3-small"
 EXPANSION_MODEL = "gpt-4o-mini"
-TOP_K = 5
+TOP_K = 10
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -51,7 +51,7 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
         print(f"  [cache hit] Reusing expansion for: '{raw_query}'")
         return expansion_cache[cache_key]
 
-   # Build context string from conversation history
+    # Build context string from conversation history
     context_str = ""
     if conversation_history and len(conversation_history) > 0:
         context_str = "\n\nConversation history (most recent last):\n"
@@ -59,11 +59,6 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
             context_str += f"User asked: {turn['query']}\n"
             context_str += f"Recommended: {', '.join(turn['dishes'][:3])}\n"
         context_str += "\nThe new query may refer to the above context."
-        context_str += "\nTry to stay in a similar cuisine and category unless the user explicitly asks to change it."
-        # Add cuisine context from last turn if available
-        last_turn = conversation_history[-1]
-        if last_turn.get("cuisines"):
-            context_str += f"\nPrevious recommendations were {', '.join(last_turn['cuisines'])} cuisine. Prefer the same unless asked to change."
 
     prompt = (
         "You are a food search assistant for Delhi restaurants. "
@@ -75,6 +70,8 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
         "western dish names. If they ask for Indian food, use Indian terminology. "
         "If no cuisine is specified, use the most relevant terminology."
         f"{context_str}\n\n"
+        "If the query is about variety (party, guests, spread), suggest a mix of veg and non-veg options across different dish types.\n\n"
+        f"If the query is about variety (party, guests, spread, sharing), suggest a mix of veg and non-veg options across different dish types.\n\n"
         f"User craving: \"{raw_query}\"\n\n"
         "Respond with a single search string of 15-25 words. No explanation."
     )
@@ -293,7 +290,17 @@ def retrieve(raw_query, top_k=TOP_K, tracker=None, conversation_history=None):
             "restaurant": match.metadata["restaurant_name"],
             "price": match.metadata["price"],
             "tags": match.metadata["tags"],
-            "cuisine": match.metadata["cuisine"]
+            "cuisine": match.metadata["cuisine"],
+            "cuisine_type": match.metadata.get("cuisine_type", ""),
+            "cooking_method": match.metadata.get("cooking_method", ""),
+            "health_tags": match.metadata.get("health_tags", []),
+            "calorie_band": match.metadata.get("calorie_band", ""),
+            "serving_format": match.metadata.get("serving_format", ""),
+            "holds_well": match.metadata.get("holds_well", False),
+            "portability": match.metadata.get("portability", False),
+            "time_affinity": match.metadata.get("time_affinity", []),
+            "occasion_tags": match.metadata.get("occasion_tags", []),
+            "dietary_tags": match.metadata.get("dietary_tags", []),
         })
 
     return hits

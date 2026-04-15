@@ -2,6 +2,7 @@ import os
 import json
 from openai import OpenAI
 from retrieval import retrieve
+from reranker import rerank
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GENERATION_MODEL = "gpt-4o-mini"
@@ -168,6 +169,9 @@ def recommend(raw_query, conversation_history=None):
     tracker = CostTracker()
 
     hits = retrieve(raw_query, top_k=10, tracker=tracker, conversation_history=conversation_history)
+
+    # Rerank top 10 → top 5
+    hits = rerank(hits, raw_query, top_n=5, debug=True)
 
     if not hits:
         return {
