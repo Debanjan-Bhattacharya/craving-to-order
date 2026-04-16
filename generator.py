@@ -172,6 +172,7 @@ def recommend(raw_query, conversation_history=None):
 
     # Rerank top 10 → top 5
     hits = rerank(hits, raw_query, top_n=5, debug=True)
+    final_hits = hits  # store for return
 
     if not hits:
         return {
@@ -188,7 +189,8 @@ def recommend(raw_query, conversation_history=None):
         "response": response_text,
         "hallucination_flagged": hallucination_flagged,
         "flagged_dishes": flagged_dishes,
-        "cost": tracker.summary()
+        "cost": tracker.summary(),
+        "hits": final_hits
     }
 
 
