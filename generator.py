@@ -24,7 +24,7 @@ Your job is to recommend up to 5 dishes from the options provided, like a mother
 what you want before you do.
 
 Rules:
-- You MUST recommend 5 dishes. Only drop below 5 if the same dish appears more than twice with no alternatives.
+- Recommend exactly as many unique dishes as are available in the options — never repeat a dish to pad to 5.
 - Prioritise variety — different dishes, different restaurants where possible.
 - Never recommend the same dish twice even if it appears at multiple restaurants, unless no alternatives exist.
 - For each dish give: name, restaurant, price, and one sentence explaining WHY this fits the craving.
@@ -172,7 +172,6 @@ def recommend(raw_query, conversation_history=None):
 
     # Rerank top 10 → top 5
     hits = rerank(hits, raw_query, top_n=5, debug=True)
-    final_hits = hits  # store for return
 
     if not hits:
         return {
@@ -189,8 +188,7 @@ def recommend(raw_query, conversation_history=None):
         "response": response_text,
         "hallucination_flagged": hallucination_flagged,
         "flagged_dishes": flagged_dishes,
-        "cost": tracker.summary(),
-        "hits": final_hits
+        "cost": tracker.summary()
     }
 
 

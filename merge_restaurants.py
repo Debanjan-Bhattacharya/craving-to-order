@@ -10,7 +10,7 @@ def merge_restaurants(existing_dataset_path, new_jsons_folder, output_path):
 
     # Load existing dataset
     try:
-        with open(existing_dataset_path) as f:
+        with open(existing_dataset_path, encoding='utf-8') as f:
             existing = json.load(f)
         existing_ids = {r["restaurant_id"] for r in existing}
         print(f"Existing dataset: {len(existing)} restaurants ({', '.join(sorted(existing_ids))})")
@@ -22,7 +22,9 @@ def merge_restaurants(existing_dataset_path, new_jsons_folder, output_path):
     # Find all JSON files in folder
     new_files = sorted([
         f for f in os.listdir(new_jsons_folder)
-        if f.endswith(".json") and not f.endswith("_ERROR.json")
+        if f.endswith(".json")
+        and not f.endswith("_ERROR.json")
+        and "_PART" not in f.upper()
     ])
 
     if not new_files:

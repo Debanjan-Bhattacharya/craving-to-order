@@ -19,6 +19,15 @@ index = pc.Index(host=INDEX_HOST)
 
 expansion_cache = {}
 
+# Load dataset summary for expansion context
+import os as _os
+_summary_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "dataset_summary.txt")
+try:
+    with open(_summary_path, encoding='utf-8') as _f:
+        DATASET_SUMMARY = _f.read()
+except FileNotFoundError:
+    DATASET_SUMMARY = "Dataset includes North Indian, South Indian, Chinese, Continental, Lebanese, Japanese, Mexican, and fast food dishes including pizza, burgers, sushi, tacos, kebabs, biryani, dosas, momos, and more."
+
 # --- STEP 5: Hindi intent mapping ---
 HINDI_MAP = {
     "pyaz": "onion", "lehsun": "garlic", "adrak": "ginger",
@@ -62,17 +71,19 @@ def expand_query(raw_query, tracker=None, conversation_history=None):
 
     prompt = (
         "You are a food search assistant for Delhi restaurants. "
-        "The menu includes North Indian, Mughlai, South Indian, Kerala, "
-        "Indo-Chinese, Lebanese, Continental, and fast food dishes.\n\n"
+       "You are a food search assistant. Use the dataset context below "
+        "to generate relevant search terms — but always generate dish names "
+        "and ingredients regardless of whether the exact cuisine exists.\n\n"
+        f"Dataset context:\n{DATASET_SUMMARY[:600]}\n\n"
         "Convert the user's craving into specific dish names, ingredients, "
-        "and textures that match their intent — preserving the cuisine type "
-        "they asked for. If they ask for western or continental food, use "
-        "western dish names. If they ask for Indian food, use Indian terminology. "
-        "If no cuisine is specified, use the most relevant terminology."
+        "and textures. Never say you don't have options — always generate "
+        "the most relevant food concepts for the query. "
+        "For late night: include pizza, burgers, wraps. "
+        "For healthy: include salads, grilled items, protein bowls. "
+        "For regional Indian cuisines: generate authentic dish names from that region."
         f"{context_str}\n\n"
-        "If the query is about variety (party, guests, spread), suggest a mix of veg and non-veg options across different dish types.\n\n"
-        f"If the query is about variety (party, guests, spread, sharing), suggest a mix of veg and non-veg options across different dish types.\n\n"
         f"User craving: \"{raw_query}\"\n\n"
+        "If the query is about variety (party, guests, spread, sharing), suggest a mix of veg and non-veg options across different dish types.\n\n"
         "Respond with a single search string of 15-25 words. No explanation."
     )
 
@@ -290,17 +301,7 @@ def retrieve(raw_query, top_k=TOP_K, tracker=None, conversation_history=None):
             "restaurant": match.metadata["restaurant_name"],
             "price": match.metadata["price"],
             "tags": match.metadata["tags"],
-            "cuisine": match.metadata["cuisine"],
-            "cuisine_type": match.metadata.get("cuisine_type", ""),
-            "cooking_method": match.metadata.get("cooking_method", ""),
-            "health_tags": match.metadata.get("health_tags", []),
-            "calorie_band": match.metadata.get("calorie_band", ""),
-            "serving_format": match.metadata.get("serving_format", ""),
-            "holds_well": match.metadata.get("holds_well", False),
-            "portability": match.metadata.get("portability", False),
-            "time_affinity": match.metadata.get("time_affinity", []),
-            "occasion_tags": match.metadata.get("occasion_tags", []),
-            "dietary_tags": match.metadata.get("dietary_tags", []),
+            "cuisine": match.metadata["cuisine"]
         })
 
     return hits
