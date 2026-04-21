@@ -3,7 +3,7 @@ build_dish_name_embeddings.py
 Embeds all unique dish names for fuzzy deduplication in similar dishes.
 One-time operation. Output used at runtime by get_similar_dishes().
 
-Input:  enriched_festival.csv
+Input:  dish_lookup.json
 Output: dish_name_embeddings.json
 Format: {"butter chicken": [0.023, -0.14, ...], ...}
 
@@ -36,11 +36,11 @@ def embed_batch(texts: list) -> list:
 
 
 def build_embeddings():
-    # Load all unique dish names
     with open(INPUT_FILE, encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+        lookup = json.load(f)
 
-    unique_names = list({r["dish_name"].strip().lower() for r in rows if r.get("dish_name")})
+    # dish names are the keys in dish_lookup.json (already lowercase)
+    unique_names = list(lookup.keys())
     total = len(unique_names)
     print(f"Unique dish names: {total}")
 
