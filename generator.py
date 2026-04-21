@@ -1,18 +1,13 @@
 import os
 import json
 from openai import OpenAI
-from retrieval import retrieve
+from retrieval import retrieve, get_similar_dishes_for_all
 from reranker import rerank
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GENERATION_MODEL = "gpt-4o-mini"
-EMBEDDING_MODEL = "text-embedding-3-small"
-EXPANSION_MODEL = "gpt-4o-mini"
-
 PROMPT_VERSION = "v1.2"
-PROMPT_NOTES = "v1.1. Up to 5 recommendations with reason. Variety enforced — duplicate dishes only when alternatives not available. Ma jaisi tone."
 
-# GPT-4o-mini pricing per 1M tokens
 COST_PER_1M_INPUT = 0.15
 COST_PER_1M_OUTPUT = 0.60
 COST_PER_1M_EMBED = 0.02
@@ -33,7 +28,6 @@ Rules:
 - Always mention price."""
 
 
-# --- COMPONENT 8: Cost Tracker ---
 class CostTracker:
     def __init__(self):
         self.reset()
@@ -70,11 +64,9 @@ class CostTracker:
 
     def total_tokens(self):
         return (
-            self.expansion_input_tokens +
-            self.expansion_output_tokens +
+            self.expansion_input_tokens + self.expansion_output_tokens +
             self.embed_tokens +
-            self.generation_input_tokens +
-            self.generation_output_tokens
+            self.generation_input_tokens + self.generation_output_tokens
         )
 
     def summary(self):
@@ -89,9 +81,7 @@ class CostTracker:
         }
 
 
-# --- COMPONENT 6: Hallucination Guard ---
 def extract_dish_names(response_text):
-    """Extract dish names from response using LLM."""
     prompt = (
         "Extract only the dish names from this food recommendation response. "
         "Return a JSON array of strings only. No explanation, no markdown.\n\n"
@@ -110,44 +100,49 @@ def extract_dish_names(response_text):
     except:
         return []
 
+
 def hallucination_guard(response_text, hits):
-    """
-    Check recommended dishes exist in retrieval hits.
-    Returns: (response_text, hallucination_flagged, flagged_dishes)
-    """
     hit_names = [h["dish"].lower() for h in hits]
     recommended = extract_dish_names(response_text)
-
     flagged = []
     for dish in recommended:
         dish_lower = dish.lower()
         if not any(dish_lower in hit or hit in dish_lower for hit in hit_names):
             flagged.append(dish)
-
     if flagged:
         note = (
             f"\n\n⚠️ Note: {len(flagged)} recommendation(s) flagged for review "
             f"— dish not found in verified menu data: {', '.join(flagged)}"
         )
         return response_text + note, True, flagged
-
     return response_text, False, []
 
 
 def generate_response(raw_query, hits, tracker):
-    """Convert retrieval hits into natural recommendation response."""
     options_text = ""
     for i, h in enumerate(hits, 1):
+        taste    = h.get("taste_tags", "")
+        texture  = h.get("texture_tags", "")
+        cuisine  = h.get("cuisine_type", "")
+        category = h.get("category_type", "")
+        health   = h.get("health_tags", "")
         options_text += (
             f"{i}. {h['dish']} @ {h['restaurant']} | ₹{h['price']}\n"
-            f"   Tags: {', '.join(h['tags'])}\n"
+            f"   Cuisine: {cuisine} | Category: {category}\n"
+            f"   Taste: {taste} | Texture: {texture}\n"
+            f"   Health: {health}\n"
         )
 
     user_prompt = (
         f"User craving: \"{raw_query}\"\n\n"
-        f"Available options (already filtered for relevance):\n{options_text}\n"
-        f"Recommend exactly 5 dishes from these options. "
-        f"Prioritise variety across restaurants and dish types."
+        f"Available options (already filtered and ranked for relevance):\n{options_text}\n"
+        f"Recommend up to 5 dishes from these options.\n"
+        f"Rules:\n"
+        f"- Prioritise variety — different cuisines, categories, restaurants\n"
+        f"- Never recommend the same dish twice\n"
+        f"- For each dish give: name, restaurant, price, one sentence explaining why it fits the craving\n"
+        f"- If fewer than 5 options are available, recommend only what's listed\n"
+        f"- Tone: warm, direct, confident. Not salesy."
     )
 
     response = client.chat.completions.create(
@@ -159,61 +154,33 @@ def generate_response(raw_query, hits, tracker):
         max_tokens=500,
         temperature=0.7
     )
-
     tracker.add_generation(response.usage)
     return response.choices[0].message.content.strip()
 
 
-def recommend(raw_query, conversation_history=None):
-    """Full pipeline: retrieve → generate → hallucination check → cost track."""
+def recommend(raw_query):
     tracker = CostTracker()
-
-    hits = retrieve(raw_query, top_k=10, tracker=tracker, conversation_history=conversation_history)
-
-    # Rerank top 10 → top 5
+    hits = retrieve(raw_query, top_k=10, tracker=tracker)
     hits = rerank(hits, raw_query, top_n=5, debug=True)
 
     if not hits:
         return {
             "response": "Sorry, I couldn't find anything matching that craving in our restaurants.",
+            "hits": [],
             "hallucination_flagged": False,
             "flagged_dishes": [],
             "cost": tracker.summary()
         }
+
+    hits = get_similar_dishes_for_all(hits, top_n=3)
 
     response_text = generate_response(raw_query, hits, tracker)
     response_text, hallucination_flagged, flagged_dishes = hallucination_guard(response_text, hits)
 
     return {
         "response": response_text,
+        "hits": hits,
         "hallucination_flagged": hallucination_flagged,
         "flagged_dishes": flagged_dishes,
         "cost": tracker.summary()
     }
-
-
-if __name__ == "__main__":
-    test_queries = [
-        "something creamy and mild under 300",
-        "spicy street food snack",
-        "light South Indian breakfast",
-        "something sour and filling",
-        "dessert under 200"
-    ]
-
-    print(f"=== Generator {PROMPT_VERSION} ===\n")
-    total_cost = 0
-
-    for query in test_queries:
-        print(f"Query: '{query}'")
-        print("-" * 40)
-        result = recommend(query)
-        print(result["response"])
-        if result["hallucination_flagged"]:
-            print(f"FLAGGED: {result['flagged_dishes']}")
-        cost = result["cost"]
-        total_cost += cost["estimated_cost_usd"]
-        print(f"\nTokens: {cost['total_tokens']} | Cost: ${cost['estimated_cost_usd']:.6f}")
-        print("=" * 60 + "\n")
-
-    print(f"Total cost for {len(test_queries)} queries: ${total_cost:.6f}")

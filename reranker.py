@@ -1,410 +1,223 @@
 """
-reranker.py — Second-pass scoring layer between Pinecone retrieval and generation.
-
-Architecture:
-  Stage 1: Pinecone returns top 10 by cosine similarity (recall-focused)
-  Stage 2: Reranker scores each on metadata signal match (precision-focused)
-  Stage 3: Returns top 5 by rerank_score to generator
-
-Boost signals used:
-  - Spice intensity match
-  - Texture match (crispy, creamy, smoky, cheesy, soft)
-  - Cooking method match (grilled, tandoor, fried, steamed)
-  - Health signal match (low-cal, high-protein, gut-friendly)
-  - Time affinity match (breakfast, lunch, snack, dinner, late-night)
-  - Serving format match (finger-food, handheld, bowl, platter)
-  - Occasion match (party, cheat-day, date-night etc.)
-  - Dietary match (vrat-friendly, no-onion-garlic, jain)
-  - Cuisine exact match
-  - Portability match
+reranker.py
+Scores candidates on full signal alignment + diversity bonus.
+Greedy selection: maximises both score AND variety.
 """
 
+from retrieval import is_duplicate_dish
 
-# --- Signal detection maps ---
-
-SPICE_SIGNALS = {
-    "very spicy": "very-spicy",
-    "extra spicy": "very-spicy",
-    "very-spicy": "very-spicy",
-    "spicy": "spicy",
-    "medium spicy": "medium-spicy",
-    "mild": "mild",
-    "not spicy": "mild",
-    "no spice": "mild",
+SIGNAL_WEIGHTS = {
+    "diet":           0.20,
+    "budget":         0.15,
+    "festival":       0.15,
+    "cuisine_type":   0.12,
+    "cuisine_region": 0.10,
+    "category_type":  0.10,
+    "texture":        0.08,
+    "taste":          0.08,
+    "occasion":       0.06,
+    "time":           0.05,
+    "health":         0.05,
+    "protein_band":   0.04,
+    "calorie_band":   0.04,
+    "cooking_method": 0.03,
+    "serving_format": 0.03,
+    "holds_well":     0.03,
+    "portability":    0.03,
+    "cosine":         0.10,
 }
 
-TEXTURE_SIGNALS = [
-    "crispy", "crunchy", "creamy", "smoky", "cheesy",
-    "soft", "gooey", "juicy", "puffy", "rich", "indulgent"
-]
-
-COOKING_SIGNALS = {
-    "grilled": "grilled",
-    "tandoor": "tandoor",
-    "tandoori": "tandoor",
-    "fried": "fried",
-    "steamed": "steamed",
-    "baked": "baked",
-    "slow cooked": "slow-cooked",
-    "dum": "dum",
-    "wok": "wok-tossed",
+DIVERSITY_BONUS = {
+    "cuisine_type":  0.15,
+    "category_type": 0.10,
+    "restaurant":    0.05,
 }
 
-HEALTH_SIGNALS = {
-    "low cal": "low-cal",
-    "low calorie": "low-cal",
-    "diet": "low-cal",
-    "weight": "low-cal",
-    "non fattening": "low-cal",
-    "not fattening": "low-cal",
-    "light": "light",
-    "healthy": "light",
-    "gym": "high-protein",
-    "protein": "high-protein",
-    "high protein": "high-protein",
-    "muscle": "high-protein",
-    "post workout": "high-protein",
-    "stomach": "gut-friendly",
-    "acidity": "gut-friendly",
-    "sick": "gut-friendly",
-    "bloating": "gut-friendly",
-}
 
-TIME_SIGNALS = {
-    "breakfast": "breakfast",
-    "morning": "breakfast",
-    "nashta": "breakfast",
-    "lunch": "lunch",
-    "afternoon": "lunch",
-    "dinner": "dinner",
-    "evening": "dinner",
-    "night": "dinner",
-    "late night": "late-night",
-    "midnight": "late-night",
-    "snack": "snack",
-    "munchies": "snack",
-}
-
-SERVING_SIGNALS = {
-    "finger food": "finger-food",
-    "party": "finger-food",
-    "guests": "finger-food",
-    "drinks": "finger-food",
-    "handheld": "handheld",
-    "on the go": "handheld",
-    "travel": "handheld",
-    "bowl": "bowl",
-    "platter": "platter",
-    "sharing": "sharing",
-}
-
-OCCASION_SIGNALS = {
-    "party": "party",
-    "cheat day": "cheat-day",
-    "cheat": "cheat-day",
-    "date": "date-night",
-    "romantic": "date-night",
-    "holi": "holi",
-    "eid": "eid",
-    "iftar": "iftar",
-    "sehri": "sehri",
-    "vrat": "vrat",
-    "fasting": "vrat",
-    "diwali": "diwali",
-}
-
-DIETARY_SIGNALS = {
-    "jain": "jain",
-    "vrat": "vrat-friendly",
-    "fasting": "vrat-friendly",
-    "no onion": "no-onion-garlic",
-    "no garlic": "no-onion-garlic",
-    "no pyaz": "no-onion-garlic",
-    "no lehsun": "no-onion-garlic",
-    "gluten free": "gluten-free",
-}
-
-PORTABILITY_SIGNALS = [
-    "travel", "picnic", "on the go", "takeaway", "packed lunch", "tiffin"
-]
+def to_set(value) -> set:
+    if not value:
+        return set()
+    if isinstance(value, list):
+        return set(v.lower().strip() for v in value if v)
+    return set(v.lower().strip() for v in str(value).split("|") if v.strip())
 
 
-def detect_signals(raw_query):
-    """Extract all reranking signals from raw query text."""
-    q = raw_query.lower()
-    signals = {}
-
-    # Spice
-    for phrase, tag in SPICE_SIGNALS.items():
-        if phrase in q:
-            signals["spice"] = tag
-            break
-
-    # Textures — can be multiple
-    signals["textures"] = [t for t in TEXTURE_SIGNALS if t in q]
-
-    # Cooking method
-    for phrase, method in COOKING_SIGNALS.items():
-        if phrase in q:
-            signals["cooking"] = method
-            break
-
-    # Health
-    for phrase, tag in HEALTH_SIGNALS.items():
-        if phrase in q:
-            signals["health"] = tag
-            break
-
-    # Time
-    for phrase, time in TIME_SIGNALS.items():
-        if phrase in q:
-            signals["time"] = time
-            break
-
-    # Serving format
-    for phrase, fmt in SERVING_SIGNALS.items():
-        if phrase in q:
-            signals["serving"] = fmt
-            break
-
-    # Occasion
-    for phrase, occ in OCCASION_SIGNALS.items():
-        if phrase in q:
-            signals["occasion"] = occ
-            break
-
-    # Dietary
-    for phrase, tag in DIETARY_SIGNALS.items():
-        if phrase in q:
-            signals["dietary"] = tag
-            break
-
-    # Portability
-    if any(p in q for p in PORTABILITY_SIGNALS):
-        signals["portable"] = True
-
-    return signals
+def overlap_score(query_vals: list, hit_val) -> float:
+    if not query_vals:
+        return 0.0
+    query_set = set(v.lower().strip() for v in query_vals if v)
+    hit_set   = to_set(hit_val)
+    if not query_set or not hit_set:
+        return 0.0
+    return len(query_set & hit_set) / len(query_set)
 
 
-def score_hit(hit, signals, raw_query):
-    """Score a single retrieval hit against detected signals."""
-    q = raw_query.lower()
-    boost = 0.0
-    boost_reasons = []
-
-    tags = hit.get("tags", [])
-    health_tags = hit.get("health_tags", []) or []
-    time_affinity = hit.get("time_affinity", []) or []
-    occasion_tags = hit.get("occasion_tags", []) or []
-    dietary_tags = hit.get("dietary_tags", []) or []
-    cooking_method = hit.get("cooking_method", "") or ""
-    serving_format = hit.get("serving_format", "") or ""
-    cuisine_type = hit.get("cuisine_type", "") or ""
-    holds_well = hit.get("holds_well", False)
-    portability = hit.get("portability", False)
-
-    # Spice match
-    spice_signal = signals.get("spice")
-    if spice_signal:
-        if spice_signal in tags:
-            boost += 0.15
-            boost_reasons.append(f"spice:{spice_signal}+0.15")
-
-    # Texture match
-    for texture in signals.get("textures", []):
-        if texture in tags or texture in q:
-            boost += 0.10
-            boost_reasons.append(f"texture:{texture}+0.10")
-
-    # Cooking method match
-    cooking_signal = signals.get("cooking")
-    if cooking_signal and cooking_method == cooking_signal:
-        boost += 0.12
-        boost_reasons.append(f"cooking:{cooking_signal}+0.12")
-
-    # Health signal match
-    health_signal = signals.get("health")
-    if health_signal:
-        if health_signal in health_tags:
-            boost += 0.15
-            boost_reasons.append(f"health:{health_signal}+0.15")
-        # Calorie band bonus for low-cal queries
-        if health_signal == "low-cal" and hit.get("calorie_band") == "low":
-            boost += 0.08
-            boost_reasons.append("calorie_band:low+0.08")
-
-    # Time affinity match
-    time_signal = signals.get("time")
-    if time_signal and time_signal in time_affinity:
-        boost += 0.12
-        boost_reasons.append(f"time:{time_signal}+0.12")
-
-    # Serving format match
-    serving_signal = signals.get("serving")
-    if serving_signal:
-        if serving_format == serving_signal:
-            boost += 0.10
-            boost_reasons.append(f"serving:{serving_signal}+0.10")
-        # Party/drinks queries also boost holds_well
-        if serving_signal == "finger-food" and holds_well:
-            boost += 0.08
-            boost_reasons.append("holds_well+0.08")
-
-    # Occasion match
-    occasion_signal = signals.get("occasion")
-    if occasion_signal and occasion_signal in occasion_tags:
-        boost += 0.12
-        boost_reasons.append(f"occasion:{occasion_signal}+0.12")
-
-    # Dietary match
-    dietary_signal = signals.get("dietary")
-    if dietary_signal and dietary_signal in dietary_tags:
-        boost += 0.15
-        boost_reasons.append(f"dietary:{dietary_signal}+0.15")
-
-    # Portability match
-    if signals.get("portable") and portability:
-        boost += 0.10
-        boost_reasons.append("portable+0.10")
-
-    return round(boost, 4), boost_reasons
+def hard_match(query_val, hit_val) -> float:
+    if not query_val:
+        return 0.0
+    if isinstance(hit_val, str):
+        return 1.0 if query_val.lower() == hit_val.lower() else 0.0
+    return 0.0
 
 
-def deduplicate_and_diversify(ranked, top_n=5, debug=True):
-    """
-    Post-rerank deduplication and diversity enforcement.
+def score_hit(hit: dict, signals: dict, selected: list) -> float:
+    score = 0.0
+    score += hit.get("score", 0.0) * SIGNAL_WEIGHTS["cosine"]
 
-    Rules:
-    1. Deduplicate by dish name — keep highest scoring instance,
-       track all restaurants for UI "available at X restaurants" cue
-    2. Category diversity — max 2 dishes of same category_type in top_n
-    3. Restaurant diversity — max 2 dishes from same restaurant in top_n
-    4. Cuisine diversity — max 3 dishes of same cuisine_type in top_n
+    diet = signals.get("diet")
+    if diet:
+        if diet == "veg" and hit.get("is_veg") != "veg":
+            return 0.0
+        elif diet == "non-veg" and hit.get("is_veg") == "veg":
+            return 0.0
+        elif diet in ("jain", "vrat"):
+            if diet not in to_set(hit.get("dietary_tags", "")):
+                return 0.0
+        score += SIGNAL_WEIGHTS["diet"]
 
-    Returns top_n diverse unique dishes + full restaurant list per dish.
-    """
-    # Step 1: Deduplicate by dish name
-    seen_names = {}
-    for hit in ranked:
-        # Normalise spelling variations (e.g. "Vada Paav" vs "Vada Pav")
-        name = hit["dish"].lower().strip()
-        name = name.replace("paav", "pav").replace("aloo", "alu").replace("alu ", "aloo ")
-        name = ' '.join(name.split())  # normalise whitespace
-        if name not in seen_names:
-            seen_names[name] = hit.copy()
-            seen_names[name]["all_restaurants"] = [hit["restaurant"]]
-        else:
-            seen_names[name]["all_restaurants"].append(hit["restaurant"])
+    budget = signals.get("budget")
+    if budget:
+        try:
+            if float(hit.get("price", 0)) <= float(budget):
+                score += SIGNAL_WEIGHTS["budget"]
+            else:
+                return 0.0
+        except (ValueError, TypeError):
+            pass
 
-    deduped = list(seen_names.values())
+    festival_signals = signals.get("festival") or []
+    if festival_signals:
+        score += overlap_score(festival_signals, hit.get("festival_tags", "")) * SIGNAL_WEIGHTS["festival"]
+
+    cuisine_signals = signals.get("cuisine_type") or []
+    if cuisine_signals:
+        score += overlap_score(cuisine_signals, hit.get("cuisine_type", "")) * SIGNAL_WEIGHTS["cuisine_type"]
+
+    region_signals = signals.get("cuisine_region") or []
+    if region_signals:
+        score += overlap_score(region_signals, hit.get("cuisine_region", "")) * SIGNAL_WEIGHTS["cuisine_region"]
+
+    category_signals = signals.get("category") or []
+    if category_signals:
+        score += overlap_score(category_signals, hit.get("category_type", "")) * SIGNAL_WEIGHTS["category_type"]
+
+    texture_signals = signals.get("texture") or []
+    if texture_signals:
+        score += overlap_score(texture_signals, hit.get("texture_tags", "")) * SIGNAL_WEIGHTS["texture"]
+
+    taste_signals = signals.get("taste") or []
+    if taste_signals:
+        score += overlap_score(taste_signals, hit.get("taste_tags", "")) * SIGNAL_WEIGHTS["taste"]
+
+    occasion_signals = signals.get("occasion") or []
+    if occasion_signals:
+        score += overlap_score(occasion_signals, hit.get("occasion_tags", "")) * SIGNAL_WEIGHTS["occasion"]
+
+    time_signals = signals.get("time") or []
+    if time_signals:
+        score += overlap_score(time_signals, hit.get("time_affinity", "")) * SIGNAL_WEIGHTS["time"]
+
+    health_signals = signals.get("health") or []
+    if health_signals:
+        score += overlap_score(health_signals, hit.get("health_tags", "")) * SIGNAL_WEIGHTS["health"]
+
+    protein_signal = signals.get("protein_band")
+    if protein_signal:
+        score += hard_match(protein_signal, hit.get("protein_band", "")) * SIGNAL_WEIGHTS["protein_band"]
+
+    calorie_signal = signals.get("calorie_band")
+    if calorie_signal:
+        score += hard_match(calorie_signal, hit.get("calorie_band", "")) * SIGNAL_WEIGHTS["calorie_band"]
+
+    cooking_signals = signals.get("cooking_method") or []
+    if cooking_signals:
+        score += overlap_score(cooking_signals, hit.get("cooking_method", "")) * SIGNAL_WEIGHTS["cooking_method"]
+
+    format_signals = signals.get("serving_format") or []
+    if format_signals:
+        score += overlap_score(format_signals, hit.get("serving_format", "")) * SIGNAL_WEIGHTS["serving_format"]
+
+    if signals.get("holds_well") is True:
+        score += (1.0 if hit.get("holds_well", "").lower() == "yes" else 0.0) * SIGNAL_WEIGHTS["holds_well"]
+
+    if signals.get("portability") is True:
+        score += (1.0 if hit.get("portability", "").lower() == "yes" else 0.0) * SIGNAL_WEIGHTS["portability"]
+
+    # Penalty for standalone bread/beverage/side-dish/dessert when no category signal
+    if not (signals.get("category") or []):
+        if hit.get("category_type", "") in ("bread", "side-dish", "beverage", "dessert"):
+            score *= 0.3
+
+    # Diversity bonus
+    specified_cuisines    = set(signals.get("cuisine_type") or [])
+    specified_restaurants = set(signals.get("restaurant_include") or [])
+    specified_categories  = set(signals.get("category") or [])
+
+    selected_cuisines    = set(h.get("cuisine_type", "").lower() for h in selected)
+    selected_categories  = set(h.get("category_type", "").lower() for h in selected)
+    selected_restaurants = set(h.get("restaurant", "").lower() for h in selected)
+
+    if not specified_cuisines and hit.get("cuisine_type", "").lower() not in selected_cuisines:
+        score += DIVERSITY_BONUS["cuisine_type"]
+
+    if not specified_categories and hit.get("category_type", "").lower() not in selected_categories:
+        score += DIVERSITY_BONUS["category_type"]
+
+    if not specified_restaurants and hit.get("restaurant", "").lower() not in selected_restaurants:
+        score += DIVERSITY_BONUS["restaurant"]
+
+    return round(score, 4)
+
+
+def rerank(hits: list, raw_query: str, top_n: int = 5, debug: bool = False) -> list:
+    if not hits:
+        return []
+
+    signals = hits[0].get("_signals", {}) if hits else {}
 
     if debug:
-        removed_dupes = len(ranked) - len(deduped)
-        if removed_dupes > 0:
-            print(f"[DEDUP] Removed {removed_dupes} duplicate dish names")
+        active = {k: v for k, v in signals.items()
+                  if v and k not in ("embedding_query", "dish_exclude", "_raw_query")}
+        print(f"\n[RERANKER] Active signals: {active}")
+        print(f"[RERANKER] Scoring {len(hits)} candidates:")
 
-    # Step 2: Diversity enforcement
-    final = []
-    category_counts = {}
-    restaurant_counts = {}
-    cuisine_counts = {}
+    selected  = []
+    remaining = list(hits)
 
-    MAX_SAME_CATEGORY = 2
-    MAX_SAME_RESTAURANT = 2
-    MAX_SAME_CUISINE = 3
+    while len(selected) < top_n and remaining:
+        scored = [(score_hit(h, signals, selected), h) for h in remaining]
+        scored.sort(key=lambda x: x[0], reverse=True)
 
-    for hit in deduped:
-        if len(final) >= top_n:
+        if debug:
+            for s, h in scored[:5]:
+                print(f"  {h['dish'][:40]:40s} | score: {s:.4f} | "
+                      f"cuisine: {h.get('cuisine_type','')[:15]} | "
+                      f"cat: {h.get('category_type','')[:12]}")
+
+        best_score, best_hit = scored[0]
+
+        if best_score <= 0.0:
             break
 
-        cat = hit.get("category_type", "")
-        restaurant = hit.get("restaurant", "")
-        cuisine = hit.get("cuisine_type", "")
-
-        # Check diversity constraints
-        if category_counts.get(cat, 0) >= MAX_SAME_CATEGORY and cat:
-            if debug:
-                print(f"[DIVERSITY] Skipping {hit['dish']} — too many {cat} dishes")
+        if is_duplicate_dish(best_hit["dish"], [h["dish"] for h in selected], threshold=0.82):
+            remaining.remove(best_hit)
             continue
 
-        if restaurant_counts.get(restaurant, 0) >= MAX_SAME_RESTAURANT and restaurant:
-            if debug:
-                print(f"[DIVERSITY] Skipping {hit['dish']} — too many dishes from {restaurant}")
-            continue
+        selected.append(best_hit)
+        remaining.remove(best_hit)
 
-        if cuisine_counts.get(cuisine, 0) >= MAX_SAME_CUISINE and cuisine:
-            if debug:
-                print(f"[DIVERSITY] Skipping {hit['dish']} — too many {cuisine} dishes")
-            continue
-
-        # Add to final list
-        final.append(hit)
-        category_counts[cat] = category_counts.get(cat, 0) + 1
-        restaurant_counts[restaurant] = restaurant_counts.get(restaurant, 0) + 1
-        cuisine_counts[cuisine] = cuisine_counts.get(cuisine, 0) + 1
-
-    # If diversity was too strict and we have fewer than top_n, fill remaining slots
-    if len(final) < top_n:
-        final_names = {h['dish'].lower().strip() for h in final}
-        for hit in deduped:
-            if hit['dish'].lower().strip() not in final_names:
-                final.append(hit)
-                final_names.add(hit['dish'].lower().strip())
-            if len(final) >= top_n:
-                break
+        if debug:
+            print(f"  → Selected: {best_hit['dish']} (score: {best_score:.4f})\n")
 
     if debug:
-        print(f"\n[FINAL] Top {len(final)} after dedup + diversity:")
-        for i, h in enumerate(final, 1):
-            r_count = len(h.get("all_restaurants", [h["restaurant"]]))
-            print(f"  {i}. {h['dish']} @ {h['restaurant']} "
-                  f"(+{r_count-1} more restaurants) | "
-                  f"score: {h['rerank_score']}")
+        print(f"\n[RERANKER] Final {len(selected)} selections:")
+        for i, h in enumerate(selected, 1):
+            print(f"  {i}. {h['dish']} @ {h['restaurant']} | "
+                  f"cuisine: {h.get('cuisine_type','')} | "
+                  f"cat: {h.get('category_type','')} | "
+                  f"₹{h.get('price','')}")
 
-    return final
+    for h in selected:
+        h.pop("_signals", None)
 
-
-def rerank(hits, raw_query, top_n=5, debug=True):
-    """
-    Full reranking pipeline:
-    1. Score all hits on metadata signals
-    2. Sort by rerank_score
-    3. Deduplicate by dish name
-    4. Enforce category/restaurant/cuisine diversity
-    5. Return top_n
-
-    Args:
-        hits: list of dicts from Pinecone retrieval (top 10)
-        raw_query: original user query string
-        top_n: number of results to return (default 5)
-        debug: if True, prints scoring breakdown for all hits
-
-    Returns:
-        top_n diverse unique hits with rerank_score and all_restaurants added
-    """
-    signals = detect_signals(raw_query)
-
-    if debug:
-        print(f"\n[RERANKER] Signals detected: {signals}")
-        print(f"[RERANKER] Scoring {len(hits)} candidates:\n")
-
-    for hit in hits:
-        boost, reasons = score_hit(hit, signals, raw_query)
-        hit["rerank_score"] = round(hit["score"] + boost, 4)
-        hit["boost"] = boost
-        hit["boost_reasons"] = reasons
-
-    # Sort by rerank_score descending
-    ranked = sorted(hits, key=lambda x: x["rerank_score"], reverse=True)
-
-    if debug:
-        for i, h in enumerate(ranked):
-            reasons_str = ", ".join(h["boost_reasons"]) if h["boost_reasons"] else "no boost"
-            print(
-                f"  {i+1}. {h['dish']} @ {h['restaurant']} | "
-                f"cosine: {h['score']} | boost: +{h['boost']} ({reasons_str}) | "
-                f"final: {h['rerank_score']}"
-            )
-
-    # Deduplicate and enforce diversity
-    return deduplicate_and_diversify(ranked, top_n=top_n, debug=debug)
+    return selected
