@@ -2,7 +2,6 @@
 __pycache__/
 *.pyc
 .claude/
-dish_name_embeddings.json
 enriched_festival.csv
 enriched_fixed.csv
 enriched_full.csv
@@ -17,3 +16,4 @@ __pycache__/
 qa_results_*.csv
 qa_summary_*.txt
 qa_analysis_*.txt
+dish_name_embeddings.json
