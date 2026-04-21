@@ -200,7 +200,7 @@ export function DishCard({ dish }: DishCardProps) {
                 ))}
               </div>
 
-              {showLeftArrow && (
+              {showLeftArrow && dish.similarDishes.length >= 4 && (
                 <Button
                   size="icon" variant="ghost"
                   className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 h-7 w-7 rounded-full bg-white border border-border z-10"
@@ -209,7 +209,7 @@ export function DishCard({ dish }: DishCardProps) {
                   <ChevronLeft className="h-3.5 w-3.5" />
                 </Button>
               )}
-              {showRightArrow && (
+              {showRightArrow && dish.similarDishes.length >= 4 && (
                 <Button
                   size="icon" variant="ghost"
                   className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 h-7 w-7 rounded-full bg-white border border-border z-10"
