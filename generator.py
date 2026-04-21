@@ -172,7 +172,7 @@ def recommend(raw_query):
             "cost": tracker.summary()
         }
 
-    hits = get_similar_dishes_for_all(hits, top_n=3)
+    hits = get_similar_dishes_for_all(hits, top_n=5)
 
     response_text = generate_response(raw_query, hits, tracker)
     response_text, hallucination_flagged, flagged_dishes = hallucination_guard(response_text, hits)

@@ -68,7 +68,7 @@ def get_recommendations(request: QueryRequest):
                     "texture_tags":  exact["texture_tags"],
                 },
                 [exact["dish_name"]],
-                top_n=3
+                top_n=5
             )
 
             reco_result = recommend(query)
