@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-INPUT_FILE  = "enriched_festival.csv"
+INPUT_FILE  = "dish_lookup.json"
 OUTPUT_FILE = "dish_name_embeddings.json"
 EMBED_MODEL = "text-embedding-3-small"
 BATCH_SIZE  = 100
